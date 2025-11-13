@@ -8,13 +8,20 @@
 		{
 			"new_sqlite_classes": ["MyDurableObject"],
 			"tag": "v1"
+		},
+		{
+			"renamed_classes": [{
+				"from": "MyDurableObject",
+				"to": "ReminderTimer"
+			}],
+			"tag": "v2"
 		}
 	],
 	"durable_objects": {
 		"bindings": [
 			{
-				"class_name": "MyDurableObject",
-				"name": "MY_DURABLE_OBJECT"
+				"class_name": "ReminderTimer",
+				"name": "REMINDER_TIMER"
 			}
 		]
 	},

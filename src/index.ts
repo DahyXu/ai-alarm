@@ -14,7 +14,18 @@ import { DurableObject } from "cloudflare:workers";
  */
 
 /** A Durable Object's behavior is defined in an exported Javascript class */
-export class MyDurableObject extends DurableObject<Env> {
+
+interface ReminderTask {
+taskId: string;
+reminderAt: number;
+content: string;
+userId: string;
+}
+
+export class ReminderTimer extends DurableObject<Env> {
+
+	protected ctx: DurableObjectState;
+	protected env: Env;
 	/**
 	 * The constructor is invoked once upon creation of the Durable Object, i.e. the first call to
 	 * 	`DurableObjectStub::get` for a given identifier (no-op constructors can be omitted)
@@ -24,19 +35,85 @@ export class MyDurableObject extends DurableObject<Env> {
 	 */
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
+		this.ctx = ctx;
+		this.env = env;
 	}
 
-	/**
-	 * The Durable Object exposes an RPC method sayHello which will be invoked when a Durable
-	 *  Object instance receives a request from a Worker via the same method invocation on the stub
-	 *
-	 * @returns The greeting to be sent back to the Worker
-	 */
-	async sayHello(): Promise<string> {
-		let result = this.ctx.storage.sql
-			.exec("SELECT 'Hello, World!' as greeting")
-			.one() as { greeting: string };
-		return result.greeting;
+	async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+		const method = request.method;
+
+		if (method === "POST" && url.pathname === "/create") {
+			const {reminderAt, content, userId} = await request.json() as ReminderTask;
+			const taskId = crypto.randomUUID();
+			const taskItem = {taskId, reminderAt, content, userId};
+			const taskPool = ( await this.ctx.storage.get<Record<string, ReminderTask>>("tasks"))|| {};
+			taskPool[taskId] = taskItem;
+			await this.ctx.storage.put("tasks", taskPool);
+
+			this._setNextAlarm(taskPool);
+			
+			return new Response(JSON.stringify({status: "success", taskId}), {status: 200});
+
+		}
+		else if (method === "DELETE" && url.pathname.startsWith("/delete")) {
+			const taskId = url.pathname.split("/").pop() || "";
+			const taskPool = (await this.ctx.storage.get<Record<string, ReminderTask>>("tasks")) || {};
+			delete taskPool[taskId];
+			await this.ctx.storage.put("tasks", taskPool);
+			await this._setNextAlarm(taskPool);
+			
+			return new Response(JSON.stringify({status: "delete success", taskId}), {status: 200});
+		}
+		else if (method === "GET" && url.pathname.startsWith("/list")) {
+			const taskPool = (await this.ctx.storage.get<Record<string, ReminderTask>>("tasks")) || {};
+			return new Response(JSON.stringify({tasks: Object.values(taskPool)}), {
+				status: 200, 
+				headers:{"Content-type":"application/json"
+				}});
+
+		}
+
+		return new Response("Durable Object is alive!");
+	}
+
+	async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
+		// This method is invoked when an alarm set by this Durable Object fires.
+		const now = Date.now();
+		const tasks:Record<string, ReminderTask> = (await this.ctx.storage.get<Record<string, ReminderTask>>("tasks")) || {};
+		const remainingTasks: Record<string, ReminderTask> = {};
+		let netxTime = Infinity;
+
+		for (const [taskId, task] of Object.entries(tasks)) {
+			if (task.reminderAt <= now) {
+				// Trigger reminder
+				//TODO
+				
+			}
+			else {
+				remainingTasks[taskId] = task;
+				if (task.reminderAt < netxTime) {
+					netxTime = task.reminderAt;
+				}
+				if(netxTime != Infinity){
+					await this.ctx.storage.setAlarm(netxTime);
+				}
+			}
+		}
+
+		await this.ctx.storage.put("tasks", remainingTasks);
+		if (netxTime != Infinity) {
+			await this.ctx.storage.setAlarm(netxTime);
+		}
+	}
+
+	private async _setNextAlarm(tasks : Record<string, ReminderTask>): Promise<void> {
+		let netxTime = Infinity;
+		for (const task of Object.values(tasks)) {
+			if (task.reminderAt < netxTime) {
+				netxTime = task.reminderAt;
+			}
+		}
 	}
 }
 
@@ -54,18 +131,18 @@ export default {
 		// class. The name of class is used to identify the Durable Object.
 		// Requests from all Workers to the instance named
 		// will go to a single globally unique Durable Object instance.
-		const id: DurableObjectId = env.MY_DURABLE_OBJECT.idFromName(
+		const id: DurableObjectId = env.REMINDER_TIMER.idFromName(
 			new URL(request.url).pathname,
 		);
 
 		// Create a stub to open a communication channel with the Durable
 		// Object instance.
-		const stub = env.MY_DURABLE_OBJECT.get(id);
+		const stub = env.REMINDER_TIMER.get(id);
 
 		// Call the `sayHello()` RPC method on the stub to invoke the method on
 		// the remote Durable Object instance
-		const greeting = await stub.sayHello();
+		const greeting = await stub.fetch(request);
 
-		return new Response(greeting);
+		return greeting;
 	},
 } satisfies ExportedHandler<Env>;
